@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orbito
+      POSTGRES_PASSWORD: orbito
+      POSTGRES_DB: orbito
+    ports: ["5432:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbito"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://orbito:orbito@db:5432/orbito?schema=public
+      PORT: 4000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      DEMO_MODE: ${DEMO_MODE:-true}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-32-characters-minimum}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+    ports: ["4000:4000"]
+    depends_on:
+      db: {condition: service_healthy}
+    command: sh -c "npx prisma db push --schema apps/api/prisma/schema.prisma && npm run db:seed -w @orbito/api && npm run start -w @orbito/api"
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-true}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+      NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-true}
+    ports: ["3000:3000"]
+    depends_on: [api]
+volumes:
+  postgres_data:

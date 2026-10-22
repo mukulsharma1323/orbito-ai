@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+enum TaskStatus {
+  BACKLOG
+  READY
+  RUNNING
+  REVIEW
+  DONE
+  BLOCKED
+}
+enum RunStatus {
+  QUEUED
+  RUNNING
+  AWAITING_APPROVAL
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id String @id @default(cuid())
+  email String @unique
+  name String
+  passwordHash String
+  memberships Membership[]
+  createdAt DateTime @default(now())
+}
+model Company {
+  id String @id @default(cuid())
+  name String
+  slug String @unique
+  description String?
+  memberships Membership[]
+  projects Project[]
+  providers ProviderConnection[]
+  tasks Task[]
+  memories MemoryEntry[]
+  approvals Approval[]
+  auditLogs AuditLog[]
+  runs AgentRun[]
+  createdAt DateTime @default(now())
+}
+model Membership {
+  id String @id @default(cuid())
+  userId String
+  companyId String
+  role Role @default(MEMBER)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  @@unique([userId, companyId])
+}
+model Project {
+  id String @id @default(cuid())
+  companyId String
+  name String
+  slug String
+  description String?
+  repositoryUrl String?
+  defaultBranch String @default("main")
+  agentsMd String @default("")
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tasks Task[]
+  memories MemoryEntry[]
+  createdAt DateTime @default(now())
+  @@unique([companyId, slug])
+}
+model ProviderConnection {
+  id String @id @default(cuid())
+  companyId String
+  kind String
+  label String
+  encryptedSecret String?
+  status String @default("configured")
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([companyId, kind, label])
+}
+model Task {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  title String
+  spec String
+  priority String @default("medium")
+  status TaskStatus @default(BACKLOG)
+  providerKind String @default("mock")
+  budgetUsd Decimal @default(5) @db.Decimal(10,2)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  runs AgentRun[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+model AgentRun {
+  id String @id @default(cuid())
+  companyId String
+  taskId String
+  providerKind String
+  status RunStatus @default(QUEUED)
+  plan Json?
+  logs Json @default("[]")
+  costUsd Decimal @default(0) @db.Decimal(10,4)
+  branchName String?
+  pullRequestUrl String?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  approval Approval?
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+}
+model MemoryEntry {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  kind String
+  title String
+  content String
+  version Int @default(1)
+  authorId String?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  revisions MemoryRevision[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([companyId, projectId])
+}
+model MemoryRevision {
+  id String @id @default(cuid())
+  memoryId String
+  version Int
+  content String
+  authorId String?
+  memory MemoryEntry @relation(fields: [memoryId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([memoryId, version])
+}
+model Approval {
+  id String @id @default(cuid())
+  companyId String
+  runId String @unique
+  type String
+  summary String
+  status ApprovalStatus @default(PENDING)
+  decidedById String?
+  decidedAt DateTime?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+}
+model AuditLog {
+  id String @id @default(cuid())
+  companyId String
+  actorId String?
+  action String
+  entityType String
+  entityId String
+  detail Json?
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@index([companyId, createdAt])
+}
