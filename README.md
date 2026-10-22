@@ -15,6 +15,12 @@ docker compose up --build
 
 Open `http://localhost:3000`. In demo mode, the web app signs in to a seeded `Prikind` workspace automatically. The API is at `http://localhost:4000`; `GET /health` reports status. **Do not expose demo mode to the internet.**
 
+### Connect Codex
+
+In **Integrations**, add a **Codex (OpenAI API key)** connection. Then create a task using **Codex (read-only planning)** and click **Run**. The API decrypts the key only for that run, starts the official Codex SDK in a temporary workspace with read-only sandboxing and no web search, and feeds it the task spec, project AGENTS.md text, and scoped company/project knowledge. The generated plan and token counts appear under **Runs**; a plan review appears under **Approvals**. A real OpenAI API key with Codex access is required. A ChatGPT/Codex desktop login is not shared with the Docker container.
+
+This run does **not** clone a GitHub repository, edit code, create a branch/PR, or execute anything when you approve the plan. The budget field is metadata; cost estimates and hard spending limits are not implemented. The run job currently lives inside the API process, so a process restart can leave an in-progress run unfinished. Use the mock provider for a no-key demo.
+
 For local development with an existing PostgreSQL server:
 
 ```bash
@@ -51,9 +57,10 @@ The bootstrap endpoint closes as soon as a user exists. Sign in from the web UI.
 | Task specs, priorities, provider choice and budget cap metadata | Working; budget enforcement pending |
 | Versioned company/project decisions, policies, notes | Working |
 | Mock agent runs with plans, logs and approval requests | Working; simulation only |
+| Codex SDK read-only planning from scoped saved context | Working with a configured OpenAI API key; live call requires your key |
 | Approve/reject gate and audit events | Working; decisions never execute external writes |
-| AES-256-GCM encrypted provider credential storage | Working; provider validation/execution pending |
-| Claude, OpenAI/Codex, GitHub, n8n and isolated workers | Interfaces/architecture only, not connected |
+| AES-256-GCM encrypted provider credential storage | Working; Codex key is used at run time, not validated on save |
+| Claude, OpenAI, GitHub, n8n and durable isolated workers | Interfaces/architecture only, not connected |
 
 ## Architecture
 
@@ -61,12 +68,13 @@ The bootstrap endpoint closes as soon as a user exists. Sign in from the web UI.
 Browser (Next.js) ──HTTP/JWT──> Express API ──Prisma──> PostgreSQL
                               │
                               └── ProviderAdapter registry
-                                   └── mock adapter (implemented)
+                                   ├── mock adapter
+                                   └── Codex SDK planning adapter
 ```
 
-All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, selects an adapter, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions.
+All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, selects an adapter, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions. Codex runs are queued in the API process and use a fresh temporary directory with a minimal process environment; the API key is passed only to the SDK child process. The task and knowledge are sent to the model.
 
-The next execution milestone should add a queue and a separate ephemeral worker container per run, with a cloned repository, scoped short-lived credentials, resource/time limits, and a write gate that can only create a reviewable branch/PR. Budget counters, retries, cancellation, webhook signatures, and n8n event delivery should be built around the same run records.
+The next execution milestone should add a durable queue and a separate ephemeral worker container per run, with a cloned repository, scoped short-lived credentials, resource/time limits, and a write gate that can only create a reviewable branch/PR. Budget counters, retries, cancellation, webhook signatures, and n8n event delivery should be built around the same run records.
 
 ## Repository layout
 
@@ -94,7 +102,7 @@ Protected API calls require `Authorization: Bearer <token>` and `x-company-id: <
 
 - Demo mode exposes automatic demo login and must remain local/private.
 - This MVP is a scaffold, not a production security certification. Add rate limiting, secure cookie sessions, CSRF protection, secret rotation, invitation lifecycle, and operational monitoring before public hosting.
-- GitHub URLs and AGENTS.md are stored as data. No repository is cloned or executed by this build.
+- GitHub URLs and AGENTS.md are stored as data. No repository is cloned or executed by this build. Stored knowledge is sent to Codex when you start a Codex run.
 - The mock adapter never calls a model or changes external systems.
 
 ## License

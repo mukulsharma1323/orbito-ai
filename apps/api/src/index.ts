@@ -119,7 +119,7 @@ app.post('/api/tasks', canWrite, asyncRoute(async (req, res) => {
 }));
 app.post('/api/tasks/:id/runs', canWrite, asyncRoute(async (req, res) => {
   const run = await startRun(db, req.companyId!, req.params.id, req.userId!);
-  res.status(201).json(run);
+  res.status(202).json(run);
 }));
 app.get('/api/runs/:id', asyncRoute(async (req, res) => {
   const run = await db.agentRun.findFirst({ where: { id: req.params.id, companyId: req.companyId }, include: { task: true, approval: true } });
@@ -163,7 +163,7 @@ app.post('/api/approvals/:id/decision', canAdmin, asyncRoute(async (req, res) =>
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid input', issues: error.flatten() });
   const message = error instanceof Error ? error.message : 'Unknown error';
-  if (message.includes('not found') || message.includes('not implemented')) return res.status(400).json({ error: message });
+  if (message.includes('not found') || message.includes('not implemented') || message.includes('already active') || message.startsWith('Add a Codex API key')) return res.status(400).json({ error: message });
   console.error(error);
   res.status(500).json({ error: 'Internal server error' });
 });

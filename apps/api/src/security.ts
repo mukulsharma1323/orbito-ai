@@ -25,3 +25,12 @@ export function encryptSecret(value: string) {
   const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
   return [iv, cipher.getAuthTag(), ciphertext].map(v => v.toString('base64url')).join('.');
 }
+
+export function decryptSecret(value: string) {
+  const parts = value.split('.');
+  if (parts.length !== 3) throw new Error('Invalid encrypted credential');
+  const [iv, tag, ciphertext] = parts.map(part => Buffer.from(part, 'base64url'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', encryptionKey(), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
