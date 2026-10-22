@@ -17,7 +17,20 @@ Open `http://localhost:3000`. In demo mode, the web app signs in to a seeded `Pr
 
 ### Connect Codex
 
-In **Integrations**, add a **Codex (OpenAI API key)** connection. Then create a task using **Codex (read-only planning)** and click **Run**. The API decrypts the key only for that run, starts the official Codex SDK in a temporary workspace with read-only sandboxing and no web search, and feeds it the task spec, project AGENTS.md text, and scoped company/project knowledge. The generated plan and token counts appear under **Runs**; a plan review appears under **Approvals**. A real OpenAI API key with Codex access is required. A ChatGPT/Codex desktop login is not shared with the Docker container.
+**Use your local ChatGPT sign-in (no OpenAI API key):**
+
+If Orbito is already running from an older clone, update it with `git pull origin main` and `docker compose up --build -d` first.
+
+1. Keep Orbito's Docker services running. On the same Mac, check `codex login status`; it must say `Logged in using ChatGPT`. Run `codex login` if needed.
+2. In **Integrations**, add **Codex (my ChatGPT plan)**. Copy the one-time runner token.
+3. In the repo on your Mac, run `npm install`, copy `.env.runner.local.example` to `.env.runner.local`, and replace the placeholder with that token. This file is gitignored. Keep `ORBITO_API_URL=http://127.0.0.1:4000` when Docker exposes its default API port.
+4. Run `npm run runner:local` in a Mac terminal and leave it running. Create a task with **Codex (my ChatGPT plan)** and click **Run**. The runner picks up the task, uses the Mac user's ChatGPT Codex login for a read-only planning turn, and sends the plan back to Orbito for approval.
+
+The runner token is scoped to one Orbito company, can be revoked by disconnecting that provider, and is shown only once. Only company owners/admins can start subscription runs. Keep the API and web UI private: anyone with an owner/admin account in that company can consume the Mac user's plan allowance. Subscription usage follows your ChatGPT plan limits; this local mode does not use an OpenAI API key. The runner keeps the Codex sign-in on the Mac and does not copy login files into Docker. It currently supports a local Orbito API on the same computer.
+
+**Use an OpenAI API key instead:**
+
+In **Integrations**, add a **Codex (OpenAI API key)** connection. Then create a task using **Codex (API key)** and click **Run**. The API decrypts the key only for that run, starts the official Codex SDK in a temporary workspace with read-only sandboxing and no web search, and feeds it the task spec, project AGENTS.md text, and scoped company/project knowledge. The generated plan and token counts appear under **Runs**; a plan review appears under **Approvals**. A real OpenAI API key with Codex access is required. A ChatGPT/Codex desktop login is not shared with the Docker container.
 
 This run does **not** clone a GitHub repository, edit code, create a branch/PR, or execute anything when you approve the plan. The budget field is metadata; cost estimates and hard spending limits are not implemented. The run job currently lives inside the API process, so a process restart can leave an in-progress run unfinished. Use the mock provider for a no-key demo.
 
@@ -58,6 +71,7 @@ The bootstrap endpoint closes as soon as a user exists. Sign in from the web UI.
 | Versioned company/project decisions, policies, notes | Working |
 | Mock agent runs with plans, logs and approval requests | Working; simulation only |
 | Codex SDK read-only planning from scoped saved context | Working with a configured OpenAI API key; live call requires your key |
+| Mac local Codex runner using ChatGPT sign-in | Implemented; requires the runner process on the signed-in Mac |
 | Approve/reject gate and audit events | Working; decisions never execute external writes |
 | AES-256-GCM encrypted provider credential storage | Working; Codex key is used at run time, not validated on save |
 | Claude, OpenAI, GitHub, n8n and durable isolated workers | Interfaces/architecture only, not connected |
@@ -69,10 +83,11 @@ Browser (Next.js) ──HTTP/JWT──> Express API ──Prisma──> PostgreS
                               │
                               └── ProviderAdapter registry
                                    ├── mock adapter
-                                   └── Codex SDK planning adapter
+                                   ├── Codex SDK API-key planning adapter
+                                   └── company-scoped Mac runner using ChatGPT sign-in
 ```
 
-All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, selects an adapter, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions. Codex runs are queued in the API process and use a fresh temporary directory with a minimal process environment; the API key is passed only to the SDK child process. The task and knowledge are sent to the model.
+All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets and runner tokens are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions. API-key Codex runs execute in the API process; subscription runs wait in PostgreSQL until the company-scoped Mac runner claims them. Both use a fresh temporary planning directory. The task and knowledge are sent to the model.
 
 The next execution milestone should add a durable queue and a separate ephemeral worker container per run, with a cloned repository, scoped short-lived credentials, resource/time limits, and a write gate that can only create a reviewable branch/PR. Budget counters, retries, cancellation, webhook signatures, and n8n event delivery should be built around the same run records.
 
@@ -93,7 +108,8 @@ docker-compose.yml              Local services
 - `POST /api/projects`, `PATCH /api/projects/:id`
 - `POST /api/tasks`, `POST /api/tasks/:id/runs`, `GET /api/runs/:id`
 - `POST /api/memories`, `PATCH /api/memories/:id`, `GET /api/memories/:id/revisions`
-- `POST /api/providers`
+- `POST /api/providers`, `DELETE /api/providers/:id`
+- `POST /runner/claim`, `POST /runner/runs/:id/complete`, `POST /runner/runs/:id/fail` (runner token)
 - `POST /api/approvals/:id/decision`
 
 Protected API calls require `Authorization: Bearer <token>` and `x-company-id: <companyId>`. Write operations enforce member role; provider and approval decisions require admin or owner role. Company creation is available at `POST /companies` for an authenticated user.

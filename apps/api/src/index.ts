@@ -2,10 +2,12 @@ import express, { NextFunction, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import { PrismaClient, Role } from '@prisma/client';
 import { z } from 'zod';
 import { encryptSecret, signSession, verifySession } from './security.js';
 import { startRun } from './orchestration.js';
+import { claimLocalRun, completeLocalRun, failLocalRun, runnerCompany } from './local-runner-service.js';
 
 const db = new PrismaClient();
 if (process.env.DEMO_MODE !== 'true') {
@@ -74,6 +76,29 @@ app.post('/companies', auth, asyncRoute(async (req, res) => {
   res.status(201).json(company);
 }));
 
+// The Mac runner has its own company-scoped token; it never receives a user's web session or Codex login files.
+app.use('/runner', (req: AuthRequest, res, next) => {
+  runnerCompany(db, req.headers.authorization).then(companyId => {
+    if (!companyId) return res.status(401).json({ error: 'Runner authorization required' });
+    req.companyId = companyId; next();
+  }).catch(next);
+});
+app.post('/runner/claim', asyncRoute(async (req, res) => {
+  const job = await claimLocalRun(db, req.companyId!);
+  if (!job) return res.status(204).end();
+  res.json(job);
+}));
+app.post('/runner/runs/:id/complete', asyncRoute(async (req, res) => {
+  const output = z.object({ plan: z.array(z.string().min(1).max(2000)).min(1).max(12), logs: z.array(z.string().max(4000)).max(10) }).parse(req.body);
+  if (!(await completeLocalRun(db, req.companyId!, req.params.id, output))) return res.status(409).json({ error: 'Run is no longer active' });
+  res.json({ ok: true });
+}));
+app.post('/runner/runs/:id/fail', asyncRoute(async (req, res) => {
+  const { reason } = z.object({ reason: z.enum(['Local Codex sign-in unavailable', 'Codex planning timed out', 'Local Codex execution failed']) }).parse(req.body);
+  if (!(await failLocalRun(db, req.companyId!, req.params.id, reason))) return res.status(409).json({ error: 'Run is no longer active' });
+  res.json({ ok: true });
+}));
+
 app.use('/api', auth, scoped);
 app.get('/api/overview', asyncRoute(async (req, res) => {
   const companyId = req.companyId!;
@@ -104,20 +129,30 @@ app.patch('/api/projects/:id', canWrite, asyncRoute(async (req, res) => {
   res.json(project);
 }));
 app.post('/api/providers', canAdmin, asyncRoute(async (req, res) => {
-  const input = z.object({ kind: z.enum(['mock', 'claude', 'openai', 'codex-cli']), label: z.string().min(2), secret: z.string().min(8).optional() }).parse(req.body);
-  if (input.kind !== 'mock' && !input.secret) return res.status(400).json({ error: 'Credential required' });
-  const provider = await db.providerConnection.create({ data: { companyId: req.companyId!, kind: input.kind, label: input.label, encryptedSecret: input.secret ? encryptSecret(input.secret) : null, status: input.kind === 'mock' ? 'ready' : 'stored-not-validated' }, select: { id: true, kind: true, label: true, status: true } });
+  const input = z.object({ kind: z.enum(['mock', 'claude', 'openai', 'codex-cli', 'codex-local']), label: z.string().min(2), secret: z.string().min(8).optional() }).parse(req.body);
+  if (!['mock', 'codex-local'].includes(input.kind) && !input.secret) return res.status(400).json({ error: 'Credential required' });
+  const runnerSecret = input.kind === 'codex-local' ? crypto.randomBytes(32).toString('hex') : null;
+  const provider = await db.providerConnection.create({ data: { companyId: req.companyId!, kind: input.kind, label: input.label, encryptedSecret: runnerSecret ? encryptSecret(runnerSecret) : input.secret ? encryptSecret(input.secret) : null, status: input.kind === 'mock' ? 'ready' : input.kind === 'codex-local' ? 'runner-configured' : 'stored-not-validated' }, select: { id: true, kind: true, label: true, status: true } });
   await audit(req, 'provider.created', 'ProviderConnection', provider.id, { kind: provider.kind });
-  res.status(201).json(provider);
+  res.status(201).json({ ...provider, ...(runnerSecret ? { runnerToken: `${provider.id}.${runnerSecret}` } : {}) });
+}));
+app.delete('/api/providers/:id', canAdmin, asyncRoute(async (req, res) => {
+  const provider = await db.providerConnection.findFirst({ where: { id: req.params.id, companyId: req.companyId } });
+  if (!provider) return res.status(404).json({ error: 'Provider not found' });
+  await db.providerConnection.delete({ where: { id: provider.id } });
+  await audit(req, 'provider.deleted', 'ProviderConnection', provider.id, { kind: provider.kind });
+  res.status(204).end();
 }));
 app.post('/api/tasks', canWrite, asyncRoute(async (req, res) => {
-  const input = z.object({ title: z.string().min(3), spec: z.string().min(10), projectId: z.string().nullable().optional(), priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'), providerKind: z.enum(['mock', 'claude', 'openai', 'codex-cli']).default('mock'), budgetUsd: z.number().min(0).max(10000).default(5) }).parse(req.body);
+  const input = z.object({ title: z.string().min(3), spec: z.string().min(10), projectId: z.string().nullable().optional(), priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'), providerKind: z.enum(['mock', 'claude', 'openai', 'codex-cli', 'codex-local']).default('mock'), budgetUsd: z.number().min(0).max(10000).default(5) }).parse(req.body);
   if (input.projectId && !(await db.project.findFirst({ where: { id: input.projectId, companyId: req.companyId } }))) return res.status(400).json({ error: 'Project not in company' });
   const task = await db.task.create({ data: { ...input, companyId: req.companyId! } });
   await audit(req, 'task.created', 'Task', task.id);
   res.status(201).json(task);
 }));
 app.post('/api/tasks/:id/runs', canWrite, asyncRoute(async (req, res) => {
+  const selected = await db.task.findFirst({ where: { id: req.params.id, companyId: req.companyId }, select: { providerKind: true } });
+  if (selected?.providerKind === 'codex-local' && !['OWNER', 'ADMIN'].includes(req.role ?? '')) return res.status(403).json({ error: 'Admin role required for local ChatGPT runs' });
   const run = await startRun(db, req.companyId!, req.params.id, req.userId!);
   res.status(202).json(run);
 }));
@@ -163,7 +198,7 @@ app.post('/api/approvals/:id/decision', canAdmin, asyncRoute(async (req, res) =>
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof z.ZodError) return res.status(400).json({ error: 'Invalid input', issues: error.flatten() });
   const message = error instanceof Error ? error.message : 'Unknown error';
-  if (message.includes('not found') || message.includes('not implemented') || message.includes('already active') || message.startsWith('Add a Codex API key')) return res.status(400).json({ error: message });
+  if (message.includes('not found') || message.includes('not implemented') || message.includes('already active') || message.startsWith('Add a Codex API key') || message.startsWith('Add a local Codex runner')) return res.status(400).json({ error: message });
   console.error(error);
   res.status(500).json({ error: 'Internal server error' });
 });

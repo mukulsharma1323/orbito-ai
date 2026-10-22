@@ -37,13 +37,16 @@ export async function startRun(db: PrismaClient, companyId: string, taskId: stri
   const task = await db.task.findFirst({ where: { id: taskId, companyId }, include: { project: true } });
   if (!task) throw new Error('Task not found');
   const adapter = adapters.get(task.providerKind);
-  if (!adapter) throw new Error(`${task.providerKind} execution is not implemented yet.`);
+  if (!adapter && task.providerKind !== 'codex-local') throw new Error(`${task.providerKind} execution is not implemented yet.`);
   const existing = await db.agentRun.findFirst({ where: { taskId, companyId, status: { in: ['QUEUED', 'RUNNING'] } } });
   if (existing) throw new Error('A run is already active for this task');
   const provider = task.providerKind === 'codex-cli'
     ? await db.providerConnection.findFirst({ where: { companyId, kind: 'codex-cli', encryptedSecret: { not: null } }, orderBy: { createdAt: 'desc' } })
     : null;
   if (task.providerKind === 'codex-cli' && !provider?.encryptedSecret) throw new Error('Add a Codex API key in Integrations before running this task');
+  if (task.providerKind === 'codex-local' && !(await db.providerConnection.findFirst({ where: { companyId, kind: 'codex-local', status: 'runner-configured' } }))) {
+    throw new Error('Add a local Codex runner in Integrations before running this task');
+  }
   const [company, memories] = await Promise.all([
     db.company.findUniqueOrThrow({ where: { id: companyId } }),
     db.memoryEntry.findMany({
@@ -60,11 +63,11 @@ export async function startRun(db: PrismaClient, companyId: string, taskId: stri
     memories,
     budgetUsd: Number(task.budgetUsd)
   };
-  const run = await db.agentRun.create({ data: { companyId, taskId, providerKind: adapter.kind, status: 'QUEUED', logs: ['Run queued'] } });
+  const run = await db.agentRun.create({ data: { companyId, taskId, providerKind: task.providerKind, status: 'QUEUED', logs: ['Run queued'] } });
   await db.task.update({ where: { id: taskId }, data: { status: 'RUNNING' } });
-  await db.auditLog.create({ data: { companyId, actorId, action: 'run.started', entityType: 'AgentRun', entityId: run.id, detail: { provider: adapter.kind } } });
-  // A dedicated durable queue is still needed for production. The API process owns this first-iteration job.
-  setImmediate(() => { void executeRun(db, run.id, companyId, taskId, adapter, input, provider?.encryptedSecret ?? undefined); });
+  await db.auditLog.create({ data: { companyId, actorId, action: 'run.started', entityType: 'AgentRun', entityId: run.id, detail: { provider: task.providerKind } } });
+  // API-key and mock jobs still run in-process; subscription jobs wait for the authenticated host runner.
+  if (adapter) setImmediate(() => { void executeRun(db, run.id, companyId, taskId, adapter, input, provider?.encryptedSecret ?? undefined); });
   return run;
 }
 
