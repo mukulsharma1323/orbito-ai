@@ -10,10 +10,45 @@ Requirements: Docker Compose. Clone or open this repository, then:
 
 ```bash
 cp .env.example .env
-docker compose up --build
+docker compose up --build --remove-orphans
 ```
 
 Open `http://localhost:3000`. In demo mode, the web app signs in to a seeded `Prikind` workspace automatically. The API is at `http://localhost:4000`; `GET /health` reports status. **Do not expose demo mode to the internet.**
+
+On first sign-in to a company, its owner or admin chooses at least one of 12 departments. That selection is saved for the company and appears on the dashboard; it can be changed with **Edit departments**. Click a department card to see its task summary and create tasks assigned to that department. Existing companies will see setup once after updating. Docker stores SQLite data in the `sqlite_data` volume.
+
+The **Board** sidebar item shows all tasks as tickets, including company-wide tasks. Its department dropdown supports multiple selections and **Select all**. Tickets can be moved between columns by dragging or using their status menu. Moving a ticket updates its task status and audit log; it does not start an agent run or approve a plan. Tickets with an active run or pending approval cannot be moved manually.
+
+For local development without Docker or a separate database server:
+
+```bash
+cp .env.example .env
+nvm use 24
+npm install
+npm run dev
+```
+
+To enable semantic knowledge search, install and start [Ollama](https://ollama.com/download), then download the embedding model **once on the machine running Ollama** (for local or Docker setup):
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Every Orbito user on that installation shares this model; they do not need to run the command individually. Without Ollama or this model, Orbito still runs and uses keyword search.
+
+`npm run dev` creates/updates the SQLite database at `apps/api/prisma/dev.db`, seeds the demo workspace, then starts the API, web app and local Docling parser. On the first run it creates `.venv-docling` and installs Docling Serve using Python 3.10+; this requires internet, several minutes and multiple gigabytes of disk space for dependencies and models. Subsequent runs reuse the environment. Wait for Docling's `Application startup complete` log before uploading PDFs, Office files or images. If the web and API are already running, `npm run dev:parser` starts just the parser. If another Docling instance is already running at `DOCLING_URL`, the script reuses it. Set `PYTHON_BIN` if `python3` is not the Python installation you want to use. After switching from an older PostgreSQL setup, update `DATABASE_URL` in your existing `.env` to `file:./dev.db`. `--remove-orphans` stops the old PostgreSQL container. PostgreSQL records are not copied into SQLite automatically; the old Docker volume is left intact.
+
+### Knowledge files and agent memory
+
+Open **Knowledge → Upload files**, choose company-wide or a project, and upload one or more files. Plain text, Markdown, CSV, JSON, YAML, XML and logs parse directly in the API. PDFs, Office files, HTML and images use [Docling Serve](https://docling-project.github.io/docling/usage/api_server/rest_api/) for text extraction and OCR. Both Docker Compose and `npm run dev` start Docling automatically. The API uses `DOCLING_URL=http://127.0.0.1:5001` by default for local development; you can point it to another Docling Serve instance. Its first start may download models and take longer than later starts.
+
+Uploaded originals and extracted text are stored in Prisma SQLite. The API chunks extracted text and retrieves company/project scoped knowledge for each run. [Mastra LibSQLVector](https://mastra.ai/reference/rag/vector-databases) stores a separate local semantic index when an Ollama embedding model is available; the API uses `OLLAMA_URL` and `OLLAMA_EMBED_MODEL`. Existing documents can be indexed with `POST /api/knowledge/reindex` (owner/admin). When Ollama is unavailable, keyword retrieval continues. Docker users can reach an Ollama instance on the host through `host.docker.internal`; set `OLLAMA_URL` if it runs elsewhere. The vector file is `apps/api/prisma/knowledge-vectors.db` locally or `/app/data/knowledge-vectors.db` in Docker. Originals remain the source of truth. Company-wide knowledge is available to every project; project knowledge is available only to that project's tasks. Files are limited to 15 MB and extracted text to 1 million characters. Images currently contribute OCR text; photos or diagrams without readable text need a vision captioning model.
+
+### Learning review and agent feedback
+
+**Learning** in the sidebar shows proposed points from uploaded documents, task specifications, approved run plans and imported chat transcripts. Each point records its source, company/project scope, status and revisions. Owners/admins can mark it **Correct / approve**, **Incorrect**, or **Needs modification**, and can edit the statement before approval. Only approved points are added to future agent context as reviewed memory. Raw documents remain retrievable as source material. Deleting a document removes its derived proposals. Approval feedback on a run creates new review candidates, so human corrections can affect later plans after review.
+
+Chat history is not connected automatically to external chat apps. Use **Learning → Import chat** to paste a transcript. By default the API derives candidate sentences from source text; set `OLLAMA_LEARNING_MODEL` to an installed local Ollama generation model for model-based extraction. Candidate status is always pending until an owner/admin reviews it. This is context retrieval and review-driven learning, not model training. The mock provider still simulates planning.
 
 ### Connect Codex
 
@@ -34,18 +69,7 @@ In **Integrations**, add a **Codex (OpenAI API key)** connection. Then create a 
 
 This run does **not** clone a GitHub repository, edit code, create a branch/PR, or execute anything when you approve the plan. The budget field is metadata; cost estimates and hard spending limits are not implemented. The run job currently lives inside the API process, so a process restart can leave an in-progress run unfinished. Use the mock provider for a no-key demo.
 
-For local development with an existing PostgreSQL server:
-
-```bash
-cp .env.example .env
-set -a; source .env; set +a
-npm install
-npm run db:push
-npm run db:seed
-npm run dev
-```
-
-Node 20+ is required. Generate real values for `JWT_SECRET` and `ENCRYPTION_KEY` before any nonlocal deployment; for example, `openssl rand -hex 32` creates the encryption key. The `.env.example` encryption key is deliberately demo-only. Environment variables from `.env` must be loaded by your shell for local Node processes (`docker compose` loads `.env` automatically).
+Node 22.13+ is required for Mastra; Node 24 is recommended (`nvm use 24`). Generate real values for `JWT_SECRET` and `ENCRYPTION_KEY` before any nonlocal deployment; for example, `openssl rand -hex 32` creates the encryption key. The `.env.example` encryption key is deliberately demo-only. The root `npm run dev` script loads `.env` automatically (`docker compose` loads `.env` automatically).
 
 ## Production bootstrap
 
@@ -65,10 +89,15 @@ The bootstrap endpoint closes as soon as a user exists. Sign in from the web UI.
 | Area | Status |
 | --- | --- |
 | Responsive dashboard with activity and attention cards | Working |
+| Company department onboarding, detail views and assigned tasks | Working; other department workflows are not implemented |
+| Global Kanban board with department multiselect and ticket status moves | Working; uses existing tasks as tickets |
 | Company scoped access and owner/admin/member/viewer roles | API working; member invitation UI pending |
 | Project registry, GitHub URL metadata and project AGENTS.md text | Working; no GitHub sync yet |
 | Task specs, priorities, provider choice and budget cap metadata | Working; budget enforcement pending |
 | Versioned company/project decisions, policies, notes | Working |
+| Company/project file knowledge and task-time retrieval | Working for text; PDF, Office and image parsing requires Docling Serve |
+| Mastra LibSQL semantic retrieval | Working with a configured Ollama embedding model; keyword fallback without it |
+| Learning review, source-backed proposals and feedback | Working for docs, tasks, approved plans, pasted chats and review feedback; external chat sync pending |
 | Mock agent runs with plans, logs and approval requests | Working; simulation only |
 | Codex SDK read-only planning from scoped saved context | Working with a configured OpenAI API key; live call requires your key |
 | Mac local Codex runner using ChatGPT sign-in | Implemented; requires the runner process on the signed-in Mac |
@@ -79,7 +108,11 @@ The bootstrap endpoint closes as soon as a user exists. Sign in from the web UI.
 ## Architecture
 
 ```text
-Browser (Next.js) ──HTTP/JWT──> Express API ──Prisma──> PostgreSQL
+Browser (Next.js) ──HTTP/JWT──> Express API ──Prisma──> SQLite
+                                   │
+                                   └── Docling Serve (PDF/Office/image parsing)
+                                   └── Mastra LibSQLVector + Ollama (optional semantic index)
+                                   └── Learning proposals → admin review → approved run context
                               │
                               └── ProviderAdapter registry
                                    ├── mock adapter
@@ -87,7 +120,7 @@ Browser (Next.js) ──HTTP/JWT──> Express API ──Prisma──> PostgreS
                                    └── company-scoped Mac runner using ChatGPT sign-in
 ```
 
-All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets and runner tokens are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions. API-key Codex runs execute in the API process; subscription runs wait in PostgreSQL until the company-scoped Mac runner claims them. Both use a fresh temporary planning directory. The task and knowledge are sent to the model.
+All company records carry `companyId`. The API resolves a membership for each `/api` request and scopes every read/write by that company. Provider secrets and runner tokens are encrypted before database storage and are never returned by list APIs. The run service resolves the task within the company, records the plan/logs, and creates a review gate. Unsupported adapters fail explicitly. Audit entries record mutations and approval decisions. API-key Codex runs execute in the API process; subscription runs wait in SQLite until the company-scoped Mac runner claims them. Both use a fresh temporary planning directory. The task and knowledge are sent to the model. This SQLite setup targets a single API instance.
 
 The next execution milestone should add a durable queue and a separate ephemeral worker container per run, with a cloned repository, scoped short-lived credentials, resource/time limits, and a write gate that can only create a reviewable branch/PR. Budget counters, retries, cancellation, webhook signatures, and n8n event delivery should be built around the same run records.
 
@@ -96,7 +129,7 @@ The next execution milestone should add a durable queue and a separate ephemeral
 ```text
 apps/web/      Next.js responsive UI
 apps/api/      Express API and adapter contract
-apps/api/prisma/schema.prisma   PostgreSQL data model
+apps/api/prisma/schema.prisma   SQLite data model
 apps/api/prisma/seed.ts         Optional Prikind demo data
 docker-compose.yml              Local services
 ```
@@ -105,9 +138,11 @@ docker-compose.yml              Local services
 
 - `POST /auth/bootstrap`, `POST /auth/login`, `POST /auth/demo`, `GET /me`
 - `GET /api/overview`
+- `PATCH /api/company/departments` (owner/admin)
 - `POST /api/projects`, `PATCH /api/projects/:id`
-- `POST /api/tasks`, `POST /api/tasks/:id/runs`, `GET /api/runs/:id`
+- `POST /api/tasks`, `PATCH /api/tasks/:id/status`, `POST /api/tasks/:id/runs`, `GET /api/runs/:id`
 - `POST /api/memories`, `PATCH /api/memories/:id`, `GET /api/memories/:id/revisions`
+- `POST /api/documents` (multipart `file`, optional `projectId`), `GET /api/documents/:id`, `GET /api/documents/:id/download`, `DELETE /api/documents/:id`
 - `POST /api/providers`, `DELETE /api/providers/:id`
 - `POST /runner/claim`, `POST /runner/runs/:id/complete`, `POST /runner/runs/:id/fail` (runner token)
 - `POST /api/approvals/:id/decision`

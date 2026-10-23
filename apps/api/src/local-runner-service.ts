@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { PlanningInput } from './codex.js';
 import { decryptSecret } from './security.js';
+import { relevantKnowledge } from './knowledge.js';
 
 export async function runnerCompany(db: PrismaClient, header: string | undefined): Promise<string | null> {
   const token = header?.match(/^Bearer ([a-z0-9]+)\.([a-f0-9]{64})$/i);
@@ -23,11 +24,7 @@ export async function claimLocalRun(db: PrismaClient, companyId: string): Promis
       db.task.findUniqueOrThrow({ where: { id: queued.taskId }, include: { project: true } }),
       db.company.findUniqueOrThrow({ where: { id: companyId } })
     ]);
-    const memories = await db.memoryEntry.findMany({
-      where: { companyId, OR: [{ projectId: null }, ...(task.projectId ? [{ projectId: task.projectId }] : [])] },
-      select: { kind: true, title: true, content: true, version: true },
-      orderBy: { updatedAt: 'desc' }, take: 30
-    });
+    const memories = await relevantKnowledge(db, companyId, task.projectId, task.title, task.spec);
     return {
       runId: queued.id,
       input: { company: company.name, project: task.project, title: task.title, spec: task.spec, memories, budgetUsd: Number(task.budgetUsd) }

@@ -4,14 +4,15 @@
   "version": "0.1.0",
   "workspaces": ["apps/*"],
   "scripts": {
-    "dev": "concurrently -n web,api -c cyan,magenta \"npm run dev -w @orbito/web\" \"npm run dev -w @orbito/api\"",
+    "dev": "npm run db:push && npm run db:seed && node --env-file=.env ./node_modules/concurrently/dist/bin/concurrently.js --kill-others-on-fail -n web,api,parser -c cyan,magenta,green \"npm run dev -w @orbito/web\" \"npm run dev -w @orbito/api\" \"npm run dev:parser\"",
+    "dev:parser": "node --env-file=.env scripts/run-docling.mjs",
     "build": "npm run build -w @orbito/api && npm run build -w @orbito/web",
     "typecheck": "npm run typecheck -w @orbito/api && npm run typecheck -w @orbito/web",
-    "db:push": "npm run db:push -w @orbito/api",
-    "db:seed": "npm run db:seed -w @orbito/api",
+    "db:push": "node --env-file=.env scripts/prepare-sqlite.mjs && node --env-file=.env ./node_modules/prisma/build/index.js db push --schema apps/api/prisma/schema.prisma",
+    "db:seed": "node --env-file=.env --import tsx apps/api/prisma/seed.ts",
     "runner:local": "node --import tsx apps/api/src/local-runner.ts"
   },
   "devDependencies": {"concurrently": "^9.1.2", "typescript": "^5.7.3", "postcss": "8.5.23", "deepmerge-ts": "8.0.0"},
   "overrides": {"postcss": "8.5.23", "deepmerge-ts": "8.0.0"},
-  "engines": {"node": ">=20"}
+  "engines": {"node": ">=22.13"}
 }

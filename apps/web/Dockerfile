@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:24-slim AS build
 WORKDIR /app
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
@@ -10,7 +10,7 @@ ARG NEXT_PUBLIC_DEMO_MODE
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_DEMO_MODE=$NEXT_PUBLIC_DEMO_MODE
 RUN npm run build -w @orbito/web
-FROM node:20-alpine
+FROM node:24-slim
 WORKDIR /app
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static

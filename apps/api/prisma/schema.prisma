@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -34,6 +34,12 @@ enum ApprovalStatus {
   APPROVED
   REJECTED
 }
+enum LearningStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_EDIT
+}
 
 model User {
   id String @id @default(cuid())
@@ -48,11 +54,17 @@ model Company {
   name String
   slug String @unique
   description String?
+  departments Json @default("[]")
+  onboardingCompletedAt DateTime?
   memberships Membership[]
   projects Project[]
   providers ProviderConnection[]
   tasks Task[]
   memories MemoryEntry[]
+  documents KnowledgeDocument[]
+  knowledgeChunks KnowledgeChunk[]
+  learnings LearningPoint[]
+  chatTranscripts ChatTranscript[]
   approvals Approval[]
   auditLogs AuditLog[]
   runs AgentRun[]
@@ -79,6 +91,10 @@ model Project {
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   tasks Task[]
   memories MemoryEntry[]
+  documents KnowledgeDocument[]
+  knowledgeChunks KnowledgeChunk[]
+  learnings LearningPoint[]
+  chatTranscripts ChatTranscript[]
   createdAt DateTime @default(now())
   @@unique([companyId, slug])
 }
@@ -97,17 +113,19 @@ model Task {
   id String @id @default(cuid())
   companyId String
   projectId String?
+  departmentId String?
   title String
   spec String
   priority String @default("medium")
   status TaskStatus @default(BACKLOG)
   providerKind String @default("mock")
-  budgetUsd Decimal @default(5) @db.Decimal(10,2)
+  budgetUsd Decimal @default(5)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
   project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   runs AgentRun[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  @@index([companyId, departmentId])
 }
 model AgentRun {
   id String @id @default(cuid())
@@ -117,7 +135,7 @@ model AgentRun {
   status RunStatus @default(QUEUED)
   plan Json?
   logs Json @default("[]")
-  costUsd Decimal @default(0) @db.Decimal(10,4)
+  costUsd Decimal @default(0)
   branchName String?
   pullRequestUrl String?
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -151,6 +169,82 @@ model MemoryRevision {
   memory MemoryEntry @relation(fields: [memoryId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   @@unique([memoryId, version])
+}
+model KnowledgeDocument {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  name String
+  mimeType String
+  size Int
+  sha256 String
+  fileData Bytes
+  extractedText String
+  preview String
+  chunkCount Int
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  chunks KnowledgeChunk[]
+  createdAt DateTime @default(now())
+  @@index([companyId, projectId])
+}
+model KnowledgeChunk {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  documentId String
+  ordinal Int
+  content String
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  document KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  @@unique([documentId, ordinal])
+  @@index([companyId, projectId])
+}
+model LearningPoint {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  sourceType String
+  sourceId String
+  sourceLabel String
+  statement String
+  sourceExcerpt String
+  status LearningStatus @default(PENDING)
+  reviewNote String?
+  reviewedById String?
+  reviewedAt DateTime?
+  version Int @default(1)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  revisions LearningRevision[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([companyId, projectId, status])
+  @@unique([companyId, sourceType, sourceId, statement])
+}
+model LearningRevision {
+  id String @id @default(cuid())
+  learningId String
+  version Int
+  statement String
+  status LearningStatus
+  reviewNote String?
+  actorId String?
+  learning LearningPoint @relation(fields: [learningId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  @@unique([learningId, version])
+}
+model ChatTranscript {
+  id String @id @default(cuid())
+  companyId String
+  projectId String?
+  title String
+  content String
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  @@index([companyId, projectId])
 }
 model Approval {
   id String @id @default(cuid())

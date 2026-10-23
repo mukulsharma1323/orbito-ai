@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { planWithCodex, PlanningInput } from './codex.js';
 import { decryptSecret } from './security.js';
+import { relevantKnowledge } from './knowledge.js';
 
 export interface ProviderAdapter {
   kind: string;
@@ -49,11 +50,7 @@ export async function startRun(db: PrismaClient, companyId: string, taskId: stri
   }
   const [company, memories] = await Promise.all([
     db.company.findUniqueOrThrow({ where: { id: companyId } }),
-    db.memoryEntry.findMany({
-      where: { companyId, OR: [{ projectId: null }, ...(task.projectId ? [{ projectId: task.projectId }] : [])] },
-      select: { kind: true, title: true, content: true, version: true },
-      orderBy: { updatedAt: 'desc' }, take: 30
-    })
+    relevantKnowledge(db, companyId, task.projectId, task.title, task.spec)
   ]);
   const input: PlanningInput = {
     company: company.name,

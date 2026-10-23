@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+.git
+.env
+.env.local
+.env.runner.local
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
