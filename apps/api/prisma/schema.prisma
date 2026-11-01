@@ -64,6 +64,7 @@ model Company {
   documents KnowledgeDocument[]
   knowledgeChunks KnowledgeChunk[]
   learnings LearningPoint[]
+  learningSourceSyncs LearningSourceSync[]
   chatTranscripts ChatTranscript[]
   approvals Approval[]
   auditLogs AuditLog[]
@@ -222,6 +223,18 @@ model LearningPoint {
   updatedAt DateTime @updatedAt
   @@index([companyId, projectId, status])
   @@unique([companyId, sourceType, sourceId, statement])
+}
+model LearningSourceSync {
+  id String @id @default(cuid())
+  companyId String
+  sourceType String
+  sourceId String
+  fingerprint String
+  extractor String
+  pointCount Int @default(0)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  syncedAt DateTime @default(now())
+  @@unique([companyId, sourceType, sourceId])
 }
 model LearningRevision {
   id String @id @default(cuid())

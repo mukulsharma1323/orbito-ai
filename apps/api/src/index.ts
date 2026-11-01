@@ -10,7 +10,7 @@ import { encryptSecret, signSession, verifySession } from './security.js';
 import { startRun } from './orchestration.js';
 import { claimLocalRun, completeLocalRun, failLocalRun, runnerCompany } from './local-runner-service.js';
 import { chunkDocument, extractDocument, supportedExtension } from './knowledge.js';
-import { proposeLearnings } from './learning.js';
+import { proposeLearnings, recordKnowledgeSourceSync, syncKnowledgeBase } from './learning.js';
 import { indexDocument, removeDocumentVectors } from './vector-memory.js';
 
 const db = new PrismaClient();
@@ -227,7 +227,9 @@ app.post('/api/documents', canWrite, upload.single('file'), asyncRoute(async (re
     sha256: crypto.createHash('sha256').update(file.buffer).digest('hex'), fileData: new Uint8Array(file.buffer), extractedText, preview: extractedText.slice(0, 300), chunkCount: chunks.length,
     chunks: { create: chunks.map((content, ordinal) => ({ companyId: req.companyId!, projectId, ordinal, content })) }
   }, select: { id: true, name: true, size: true, chunkCount: true, projectId: true, createdAt: true } });
-  await proposeLearnings(db, { companyId: req.companyId!, projectId, sourceType: 'document', sourceId: document.id, sourceLabel: `Document: ${name}`, content: extractedText });
+  const learningSource = { companyId: req.companyId!, projectId, sourceType: 'document' as const, sourceId: document.id, sourceLabel: `Document: ${name}`, content: extractedText };
+  const learningResult = await proposeLearnings(db, learningSource);
+  await recordKnowledgeSourceSync(db, learningSource, learningResult);
   // Indexing is best effort: originals and extracted text remain available when Ollama is offline.
   void indexDocument(db, req.companyId!, document.id).catch(error => console.warn('Knowledge vector indexing deferred:', (error as Error).message));
   await audit(req, 'document.uploaded', 'KnowledgeDocument', document.id, { name, chunkCount: chunks.length, projectId });
@@ -250,6 +252,7 @@ app.delete('/api/documents/:id', canWrite, asyncRoute(async (req, res) => {
   if (!document) return res.status(404).json({ error: 'Document not found' });
   await db.knowledgeDocument.delete({ where: { id: document.id } });
   await db.learningPoint.deleteMany({ where: { companyId: req.companyId!, sourceType: 'document', sourceId: document.id } });
+  await db.learningSourceSync.deleteMany({ where: { companyId: req.companyId!, sourceType: 'document', sourceId: document.id } });
   void removeDocumentVectors(document.id).catch(error => console.warn('Vector cleanup deferred:', (error as Error).message));
   await audit(req, 'document.deleted', 'KnowledgeDocument', document.id);
   res.status(204).end();
@@ -258,9 +261,14 @@ app.post('/api/chat-transcripts', canWrite, asyncRoute(async (req, res) => {
   const input = z.object({ title: z.string().min(2).max(150), content: z.string().min(25).max(50000), projectId: z.string().nullable().optional() }).parse(req.body);
   if (input.projectId && !(await db.project.findFirst({ where: { id: input.projectId, companyId: req.companyId } }))) return res.status(400).json({ error: 'Project not in company' });
   const transcript = await db.chatTranscript.create({ data: { companyId: req.companyId!, projectId: input.projectId || null, title: input.title, content: input.content } });
-  const count = await proposeLearnings(db, { companyId: req.companyId!, projectId: transcript.projectId, sourceType: 'chat', sourceId: transcript.id, sourceLabel: `Chat: ${transcript.title}`, content: transcript.content });
-  await audit(req, 'chat.ingested', 'ChatTranscript', transcript.id, { count });
-  res.status(201).json({ id: transcript.id, count });
+  const result = await proposeLearnings(db, { companyId: req.companyId!, projectId: transcript.projectId, sourceType: 'chat', sourceId: transcript.id, sourceLabel: `Chat: ${transcript.title}`, content: transcript.content });
+  await audit(req, 'chat.ingested', 'ChatTranscript', transcript.id, { count: result.count });
+  res.status(201).json({ id: transcript.id, count: result.count });
+}));
+app.post('/api/learnings/sync-knowledge', canAdmin, asyncRoute(async (req, res) => {
+  const result = await syncKnowledgeBase(db, req.companyId!);
+  await audit(req, 'learning.knowledge_synced', 'Company', req.companyId!, result);
+  res.json(result);
 }));
 app.patch('/api/learnings/:id/review', canAdmin, asyncRoute(async (req, res) => {
   const input = z.object({ status: z.enum(['APPROVED', 'REJECTED', 'NEEDS_EDIT']), statement: z.string().min(15).max(500).optional(), reviewNote: z.string().max(2000).optional(), version: z.number().int().positive() }).parse(req.body);
